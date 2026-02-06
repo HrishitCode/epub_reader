@@ -1,0 +1,6 @@
+export type Books = {
+    public: {
+        
+    }
+}
+
