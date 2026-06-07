@@ -1,4 +1,11 @@
-export default function DashboardLayout({
+import type { Metadata } from "next"
+import "./globals.css"
+
+export const metadata: Metadata = {
+  title: "My Book Reader",
+}
+
+export default function RootLayout({
   children,
 }: {
   children: React.ReactNode
@@ -6,9 +13,7 @@ export default function DashboardLayout({
   return (
     <html lang="en">
       <body>
-        {/* Layout UI */}
-        {/* Place children where you want to render a page or nested layout */}
-        <main>{children}</main>
+        {children}
       </body>
     </html>
   )

@@ -12,13 +12,11 @@ export const signup = async (email: string, password: string) => {
     return error
 }
 
-export const login = async (email: string, password: string) => {
+export const login = async (email: string, password: string): Promise<string | null> => {
     const { data, error } = await supabase.auth.signInWithPassword({
       email: email,
       password: password,
     })
-    if (data){
-      return data['user']['id']
-    }
-    return error
+    if (error) throw error
+    return data.user?.id ?? null
 }

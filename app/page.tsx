@@ -2,7 +2,6 @@
 
 import { useState, useEffect, FormEvent, FormEventHandler } from "react";
 import { login, signup } from "./lib/supabase/auth";
-import { getBooks } from "./lib/supabase/queries";
 import { useRouter } from "next/navigation";
 
 type AuthMode = "login" | "signup";
@@ -22,26 +21,25 @@ export default function Page() {
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+    e.preventDefault()
+    try {
 
     if (mode === "signup"){
-      if (password === confirmPassword) {
-        signup(email, password)
+      if (password !== confirmPassword) {
+        alert("Passwords don't match")
+        return
       }
-      else {
-        // throw an alert error here
-        console.log("Not matching passwords") 
-      }
+      await signup(email, password)
+      alert("Check your email to confirm your account, then log in.")
     }
     else {
       const uid = await login(email, password)
-      const books = await getBooks(uid)
-      console.log(books)
-      // router.push(`/home?bookUrl=${encodeURIComponent(books[0]['book_url'])}`);
-
+      if (uid) router.push("/library")
     }
-    console.log(email, password, confirmPassword);
-  };
+    } catch (err: any) {
+      alert(err?.message ?? "Something went wrong")
+    }
+  }
 
   return (
     <div>
