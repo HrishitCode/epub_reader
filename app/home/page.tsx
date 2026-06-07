@@ -1,7 +1,7 @@
 "use client"
 
 import { useSearchParams, useRouter } from 'next/navigation'
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { ReactReader, ReactReaderStyle } from 'react-reader'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -263,7 +263,7 @@ function DefinitionPopover({
 }
 
 // ── Main Reader ───────────────────────────────────────────────────────────────
-export default function Reader() {
+function Reader() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const bookUrl = searchParams.get("bookUrl")
@@ -432,5 +432,22 @@ export default function Reader() {
       )}
 
     </div>
+  )
+}
+
+// Next.js requires useSearchParams() to be inside a Suspense boundary.
+// This wrapper is the actual page export — it suspends while search params load.
+export default function ReaderPage() {
+  return (
+    <Suspense fallback={
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+        minHeight: "100vh", background: SEPIA_BG }}>
+        <p style={{ color: SEPIA_ARROW, fontFamily: "Georgia, serif", fontSize: "1.1rem" }}>
+          Opening book…
+        </p>
+      </div>
+    }>
+      <Reader />
+    </Suspense>
   )
 }

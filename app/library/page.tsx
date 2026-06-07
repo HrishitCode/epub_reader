@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, Suspense } from "react"
 import { useRouter } from "next/navigation"
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const Epub = require("epubjs").default ?? require("epubjs")
@@ -40,7 +40,7 @@ async function extractEpubMeta(buffer: ArrayBuffer, fallbackTitle: string): Prom
   }
 }
 
-export default function Library() {
+function Library() {
   const router = useRouter()
   const [books, setBooks] = useState<Book[]>([])
   const [uid, setUid] = useState<string | null>(null)
@@ -167,5 +167,17 @@ export default function Library() {
 
       </div>
     </main>
+  )
+}
+
+export default function LibraryPage() {
+  return (
+    <Suspense fallback={
+      <main className="min-h-screen bg-[#f4f1ea] flex items-center justify-center">
+        <p className="text-[#7a6652] font-serif">Loading library…</p>
+      </main>
+    }>
+      <Library />
+    </Suspense>
   )
 }
