@@ -2,9 +2,8 @@
 
 import { useEffect, useState, Suspense } from "react"
 import { useRouter } from "next/navigation"
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const Epub = require("epubjs").default ?? require("epubjs")
-import { getBooks, getUserId, insertBook, uploadFile, uploadCover, getBookUrl } from "../lib/supabase/queries"
+import { unzipSync, strFromU8 } from "fflate"
+import { getBooks, getUserId, insertBook, uploadFile, uploadCover, getBookUrl, deleteBook } from "../lib/supabase/queries"
 
 type Book = {
   id: number
@@ -15,25 +14,66 @@ type Book = {
 
 type EpubMeta = { title: string; coverBlob: Blob | null }
 
-// Extract title + cover from an epub ArrayBuffer in one pass.
-async function extractEpubMeta(buffer: ArrayBuffer, fallbackTitle: string): Promise<EpubMeta> {
+// Parse epub metadata directly from the zip — no epubjs, no rendering pipeline.
+// epub format: zip → META-INF/container.xml → OPF file → title + cover path
+function extractEpubMeta(buffer: ArrayBuffer, fallbackTitle: string): EpubMeta {
   try {
-    const book = Epub(buffer as any)
-    await book.ready
+    const zip = unzipSync(new Uint8Array(buffer))
 
-    // Title from epub metadata (falls back to filename if empty)
-    const metaTitle: string = book.packaging?.metadata?.title?.trim() || fallbackTitle
+    // 1. Read META-INF/container.xml to find the OPF file path
+    const containerXml = strFromU8(zip["META-INF/container.xml"])
+    const opfPathMatch = containerXml.match(/full-path="([^"]+\.opf)"/)
+    if (!opfPathMatch) return { title: fallbackTitle, coverBlob: null }
+    const opfPath = opfPathMatch[1]
 
-    // Cover image
+    // 2. Parse the OPF file (it's XML)
+    const opfXml = strFromU8(zip[opfPath])
+
+    // 3. Extract title
+    const titleMatch = opfXml.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/)
+    const title = titleMatch?.[1]?.trim() || fallbackTitle
+
+    // 4. Find cover image path
+    //    Epubs store the cover in one of two ways — check both
     let coverBlob: Blob | null = null
-    const coverUrl: string | null = await book.coverUrl()
-    if (coverUrl) {
-      const res = await fetch(coverUrl)
-      coverBlob = await res.blob()
+
+    // Method A: <meta name="cover" content="cover-id"/> → find that item in manifest
+    const coverMetaMatch = opfXml.match(/<meta[^>]+name=["']cover["'][^>]+content=["']([^"']+)["']/)
+    const coverId = coverMetaMatch?.[1]
+
+    // Method B: manifest item with id="cover" or properties="cover-image"
+    const manifestItemRegex = /<item[^>]+>/g
+    let itemMatch: RegExpExecArray | null
+    let coverHref: string | null = null
+
+    while ((itemMatch = manifestItemRegex.exec(opfXml)) !== null) {
+      const item = itemMatch[0]
+      const isImage = /media-type=["']image\//.test(item)
+      if (!isImage) continue
+
+      const idMatch = item.match(/\bid=["']([^"']+)["']/)
+      const hrefMatch = item.match(/\bhref=["']([^"']+)["']/)
+      const isCoverByProp = /properties=["'][^"']*cover-image[^"']*["']/.test(item)
+      const isCoverById = coverId && idMatch?.[1] === coverId
+
+      if (isCoverByProp || isCoverById) {
+        coverHref = hrefMatch?.[1] ?? null
+        break
+      }
     }
 
-    book.destroy()
-    return { title: metaTitle, coverBlob }
+    if (coverHref) {
+      // Resolve relative path against OPF directory
+      const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : ""
+      const fullCoverPath = coverHref.startsWith("/") ? coverHref.slice(1) : opfDir + coverHref
+
+      const coverBytes = zip[fullCoverPath] ?? zip[decodeURIComponent(fullCoverPath)]
+      if (coverBytes) {
+        coverBlob = new Blob([coverBytes], { type: "image/jpeg" })
+      }
+    }
+
+    return { title, coverBlob }
   } catch (e) {
     console.warn("epub meta extraction failed:", e)
     return { title: fallbackTitle, coverBlob: null }
@@ -47,6 +87,7 @@ function Library() {
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
 
   useEffect(() => {
     getUserId()
@@ -57,6 +98,19 @@ function Library() {
       })
       .catch(() => router.push("/"))
   }, [router])
+
+  const handleDelete = async (book: Book) => {
+    if (!confirm(`Remove "${book.title ?? "this book"}" from your library?`)) return
+    setDeletingId(book.id)
+    try {
+      await deleteBook(book.id, book.book_url, book.cover_url)
+      setBooks(prev => prev.filter(b => b.id !== book.id))
+    } catch {
+      setError("Could not delete book. Please try again.")
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -74,10 +128,10 @@ function Library() {
       setUploadStatus("Reading file…")
       const buffer = await file.arrayBuffer()
 
-      // 2. Extract title + cover from epub metadata
+      // 2. Extract title + cover from epub metadata (synchronous zip parsing — no epubjs)
       setUploadStatus("Reading book info…")
       const fallback = file.name.replace(".epub", "")
-      const { title, coverBlob } = await extractEpubMeta(buffer, fallback)
+      const { title, coverBlob } = extractEpubMeta(buffer, fallback)
       console.log("✅ epub title:", title, "| has cover:", !!coverBlob)
 
       // 3. Upload epub file
@@ -136,31 +190,44 @@ function Library() {
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-6">
             {books.map((book) => (
-              <button
-                key={book.id}
-                onClick={() => router.push(`/home?bookUrl=${encodeURIComponent(book.book_url)}`)}
-                className="group flex flex-col items-center gap-2 text-left"
-              >
-                <div className="w-full aspect-[2/3] rounded-sm shadow-md overflow-hidden group-hover:shadow-lg transition-shadow bg-[#d9cfc4]">
-                  {book.cover_url ? (
-                    <img
-                      src={book.cover_url}
-                      alt={book.title ?? "Book cover"}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    // Fallback: decorative placeholder with title
-                    <div className="w-full h-full flex items-end p-3">
-                      <span className="text-xs text-[#3d2b1f] font-serif line-clamp-3 leading-snug">
-                        {book.title ?? "Untitled"}
-                      </span>
-                    </div>
-                  )}
-                </div>
-                <span className="text-sm text-[#3d2b1f] font-serif text-center line-clamp-2">
-                  {book.title ?? "Untitled"}
-                </span>
-              </button>
+              <div key={book.id} className="group relative flex flex-col items-center gap-2">
+
+                {/* Delete button — always visible on mobile, hover-only on desktop */}
+                <button
+                  onClick={() => handleDelete(book)}
+                  disabled={deletingId === book.id}
+                  className="absolute top-1 right-1 z-10 w-7 h-7 rounded-full bg-[#3d2b1f] text-[#f4f1ea] text-xs flex items-center justify-center sm:opacity-0 sm:group-hover:opacity-100 transition-opacity disabled:opacity-40"
+                  title="Remove from library"
+                >
+                  {deletingId === book.id ? "…" : "✕"}
+                </button>
+
+                {/* Book cover — clicking opens the reader */}
+                <button
+                  onClick={() => router.push(`/home?bookUrl=${encodeURIComponent(book.book_url)}`)}
+                  className="w-full text-left"
+                >
+                  <div className="w-full aspect-[2/3] rounded-sm shadow-md overflow-hidden group-hover:shadow-lg transition-shadow bg-[#d9cfc4]">
+                    {book.cover_url ? (
+                      <img
+                        src={book.cover_url}
+                        alt={book.title ?? "Book cover"}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-end p-3">
+                        <span className="text-xs text-[#3d2b1f] font-serif line-clamp-3 leading-snug">
+                          {book.title ?? "Untitled"}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <span className="block text-sm text-[#3d2b1f] font-serif text-center line-clamp-2 mt-2">
+                    {book.title ?? "Untitled"}
+                  </span>
+                </button>
+
+              </div>
             ))}
           </div>
         )}
