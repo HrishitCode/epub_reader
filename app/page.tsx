@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { login, signup } from "./lib/supabase/auth"
+import { useState, useEffect } from "react"
+import { login, signup, getExistingSession } from "./lib/supabase/auth"
 import { useRouter } from "next/navigation"
 
 type AuthMode = "login" | "signup"
@@ -13,6 +13,11 @@ export default function Page() {
   const [confirmPassword, setConfirmPassword] = useState("")
   const [email, setEmail] = useState("")
   const [loading, setLoading] = useState(false)
+
+  // If Supabase already has a session (token in localStorage), skip the login screen
+  useEffect(() => {
+    getExistingSession().then(uid => { if (uid) router.replace("/library") })
+  }, [router])
 
   const toggleMode = () => {
     setMode(prev => prev === "login" ? "signup" : "login")

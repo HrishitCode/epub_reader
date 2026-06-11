@@ -4,6 +4,7 @@ import { useEffect, useState, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import { unzipSync, strFromU8 } from "fflate"
 import { getBooks, getUserId, insertBook, uploadFile, uploadCover, getBookUrl, deleteBook } from "../lib/supabase/queries"
+import { logout } from "../lib/supabase/auth"
 
 type Book = {
   id: number
@@ -169,16 +170,30 @@ function Library() {
 
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-serif text-[#3d2b1f]">My Library</h1>
-          <label className="cursor-pointer bg-[#3d2b1f] text-[#f4f1ea] px-4 py-2 rounded text-sm hover:bg-[#5a3e2b] transition-colors">
-            {uploading ? uploadStatus || "Uploading…" : "+ Add Book"}
-            <input
-              type="file"
-              accept=".epub"
-              className="hidden"
-              onChange={handleUpload}
-              disabled={uploading}
-            />
-          </label>
+          <div className="flex items-center gap-3">
+            <label className="cursor-pointer bg-[#3d2b1f] text-[#f4f1ea] px-4 py-2 rounded text-sm hover:bg-[#5a3e2b] transition-colors">
+              {uploading ? uploadStatus || "Uploading…" : "+ Add Book"}
+              <input
+                type="file"
+                accept=".epub"
+                className="hidden"
+                onChange={handleUpload}
+                disabled={uploading}
+              />
+            </label>
+            <button
+              onClick={() => router.push("/vocabulary")}
+              className="text-sm font-serif text-[#7a6652] hover:text-[#3d2b1f] transition-colors"
+            >
+              Notebook
+            </button>
+            <button
+              onClick={async () => { await logout(); router.push("/") }}
+              className="text-sm font-serif text-[#7a6652] hover:text-[#3d2b1f] transition-colors"
+            >
+              Log out
+            </button>
+          </div>
         </div>
 
         {error && <p className="text-red-600 mb-4 text-sm">{error}</p>}
@@ -204,7 +219,7 @@ function Library() {
 
                 {/* Book cover — clicking opens the reader */}
                 <button
-                  onClick={() => router.push(`/home?bookUrl=${encodeURIComponent(book.book_url)}`)}
+                  onClick={() => router.push(`/home?bookUrl=${encodeURIComponent(book.book_url)}&bookId=${book.id}`)}
                   className="w-full text-left"
                 >
                   <div className="w-full aspect-[2/3] rounded-sm shadow-md overflow-hidden group-hover:shadow-lg transition-shadow bg-[#d9cfc4]">
