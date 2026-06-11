@@ -429,7 +429,7 @@ function Reader() {
     readerArea:  { ...ReactReaderStyle.readerArea,  backgroundColor: t.bg },
     arrow:       { ...ReactReaderStyle.arrow,       color: t.arrow, zIndex: 201 },
     arrowHover:  { color: t.text },
-    tocBackground: t.barBg,
+    tocBackground: { background: t.barBg } as React.CSSProperties,
   }
 
   // ── Render: loading / error states ──────────────────────────────────────────
