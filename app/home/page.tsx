@@ -523,7 +523,8 @@ function Reader() {
           locationChanged={handleLocationChanged}
           getRendition={getRendition}
           readerStyles={readerStyles}
-          epubOptions={{ allowScriptedContent: true, replacements: "none" }}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          epubOptions={{ allowScriptedContent: true, replacements: "none" } as any}
         />
       </div>
 
