@@ -3,8 +3,11 @@
 import { useSearchParams, useRouter } from 'next/navigation'
 import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { ReactReader, ReactReaderStyle } from 'react-reader'
-import { updateProgress, getProgress, getBookStartIndex, upsertWordLookup, saveHighlight } from '../lib/supabase/queries'
+import { updateProgress, getProgress, getBookStartIndex, upsertWordLookup, saveHighlight, getBookHighlightCfis } from '../lib/supabase/queries'
 import { getUserId } from '../lib/supabase/queries'
+
+// SVG styles for the in-book highlight overlay (epub.js annotations layer)
+const HIGHLIGHT_STYLE = { fill: "#e9b44c", "fill-opacity": "0.3", "mix-blend-mode": "multiply" }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Rendition = any
@@ -83,7 +86,16 @@ function buildEpubCss(pageHeightPx: number, pageWidthPx: number, t: typeof THEME
 type DictEntry = {
   word: string
   phonetic?: string
+  phonetics?: { text?: string; audio?: string }[]
   meanings: { partOfSpeech: string; definitions: { definition: string }[] }[]
+}
+
+// First phonetic entry with a non-empty audio URL. The API sometimes returns
+// protocol-relative URLs ("//ssl.gstatic.com/…") — normalise to https.
+function audioUrl(entry: DictEntry): string | null {
+  const raw = entry.phonetics?.find(p => p.audio && p.audio.length > 0)?.audio
+  if (!raw) return null
+  return raw.startsWith("//") ? `https:${raw}` : raw
 }
 
 const DICT_CACHE_PREFIX = "dict_v1_"
@@ -232,6 +244,15 @@ function DefinitionPopover({ entry, onClose, theme }: {
           <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
             <span style={{ fontSize: "1.2rem", fontWeight: "bold", color: theme.text }}>{entry.word}</span>
             {entry.phonetic && <span style={{ fontSize: "0.85rem", color: theme.arrow }}>{entry.phonetic}</span>}
+            {audioUrl(entry) && (
+              <button
+                onClick={() => { new Audio(audioUrl(entry)!).play().catch(() => {}) }}
+                title="Play pronunciation"
+                style={{ background: "none", border: "none", cursor: "pointer",
+                  color: theme.arrow, fontSize: "1rem", padding: 0, lineHeight: 1 }}>
+                🔊
+              </button>
+            )}
             <button onClick={onClose} style={{ marginLeft: "auto", background: "none", border: "none",
               cursor: "pointer", color: theme.arrow, fontSize: "1.1rem" }}>✕</button>
           </div>
@@ -279,6 +300,24 @@ function Reader() {
     if (renditionRef.current) renditionRef.current.themes.override("color", t.epubText)
   }
 
+  // ── Font size — percentage, persisted to localStorage ──────────────────────
+  const [fontSize, setFontSize] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem("reader_font_size") ?? "100", 10) || 100 }
+    catch { return 100 }
+  })
+  // Ref so getRendition (created once) can read the current value
+  const fontSizeRef = useRef(fontSize)
+
+  const changeFontSize = (delta: number) => {
+    setFontSize(prev => {
+      const next = Math.min(160, Math.max(70, prev + delta))
+      fontSizeRef.current = next
+      try { localStorage.setItem("reader_font_size", String(next)) } catch { /* ignore */ }
+      try { renditionRef.current?.themes.fontSize(`${next}%`) } catch { /* ignore */ }
+      return next
+    })
+  }
+
   // ── Progress — localStorage (fast) + Supabase (cross-device) ───────────────
   const progressKey  = bookUrl  ? `progress_${bookUrl}` : null
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -302,6 +341,10 @@ function Reader() {
   // Always holds the current CFI — resize callbacks can't see the latest
   // `location` state through their closure, so we read it from this ref.
   const locationRef    = useRef<string | number>(0)
+  // Whole-book progress 0..1 from the latest relocated event (needs locations)
+  const pctRef         = useRef<number | null>(null)
+  // CFI range of the current text selection (from epub.js's "selected" event)
+  const selectedCfiRef = useRef<string | null>(null)
 
   // Fetch userId once on mount — needed for word lookup saving
   useEffect(() => { getUserId().then(id => { userIdRef.current = id }).catch(() => {}) }, [])
@@ -407,6 +450,29 @@ function Reader() {
   const getRendition = useCallback((rendition: Rendition) => {
     renditionRef.current = rendition
 
+    // Apply the persisted font size before the first page paints
+    try { rendition.themes.fontSize(`${fontSizeRef.current}%`) } catch { /* ignore */ }
+
+    // Track the CFI range of the current selection — epub.js emits "selected"
+    // (debounced) whenever text is selected inside the iframe. Saved alongside
+    // the highlight so it can be repainted in-book on future opens.
+    rendition.on("selected", (cfiRange: string) => { selectedCfiRef.current = cfiRange })
+
+    // Repaint this book's saved highlights. annotations.highlight() registers
+    // the CFI on the annotations layer, so epub.js paints it whenever the
+    // containing section renders — safe to call before first display.
+    if (bookId) {
+      getUserId()
+        .then(uid => getBookHighlightCfis(uid, bookId))
+        .then(cfis => {
+          for (const cfi of cfis) {
+            try { rendition.annotations.highlight(cfi, {}, undefined, "hl", HIGHLIGHT_STYLE) }
+            catch { /* stale CFI from an older epub copy — skip */ }
+          }
+        })
+        .catch(() => {})
+    }
+
     rendition.hooks.content.register((contents: any) => {
       const doc = contents.document
       if (!doc) return
@@ -431,14 +497,24 @@ function Reader() {
         debounceTimer = setTimeout(() => {
           const sel  = contents.window.getSelection()
           const text = sel?.toString().trim() ?? ""
+          if (text.length === 0) selectedCfiRef.current = null
           setSelectedText(text.length > 0 ? text : null)
         }, 300)
       })
     })
 
+    // Generate locations so relocated events carry a whole-book percentage
+    // (without this, loc.start.percentage is always 0). Runs async in the
+    // background; progress saves just omit pct until it's ready.
+    rendition.book?.ready
+      ?.then(() => rendition.book.locations.generate(1000))
+      .catch(() => { /* percentage stays unavailable for this book */ })
+
     rendition.on("relocated", (loc: any) => {
       const { displayed } = loc.start
       setPage(`${displayed.page} / ${displayed.total}`)
+      const pct = loc.start.percentage
+      if (typeof pct === "number" && pct > 0) pctRef.current = pct
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -454,7 +530,8 @@ function Reader() {
     // Supabase — debounced (don't hammer DB on every swipe)
     if (bookId) {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = setTimeout(() => updateProgress(bookId, epubcfi), 2000)
+      saveTimerRef.current = setTimeout(
+        () => updateProgress(bookId, epubcfi, pctRef.current ?? undefined), 2000)
     }
   }
 
@@ -548,6 +625,25 @@ function Reader() {
           )}
 
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            {/* Font size — clamped 70–160% in steps of 10 */}
+            <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <button onClick={() => changeFontSize(-10)} disabled={fontSize <= 70}
+                title="Smaller text" aria-label="Decrease font size"
+                style={{ background: "none", border: "none", cursor: "pointer",
+                  color: t.mutedText, fontFamily: "Georgia, serif",
+                  fontSize: "0.8rem", lineHeight: 1, padding: "2px 4px",
+                  opacity: fontSize <= 70 ? 0.4 : 1 }}>
+                A−
+              </button>
+              <button onClick={() => changeFontSize(10)} disabled={fontSize >= 160}
+                title="Larger text" aria-label="Increase font size"
+                style={{ background: "none", border: "none", cursor: "pointer",
+                  color: t.mutedText, fontFamily: "Georgia, serif",
+                  fontSize: "1.05rem", lineHeight: 1, padding: "2px 4px",
+                  opacity: fontSize >= 160 ? 0.4 : 1 }}>
+                A+
+              </button>
+            </div>
             {/* Go to very beginning — front matter is skipped on first open but
                 never hidden; this jumps back to the cover/title page. */}
             <button onClick={() => { try { renditionRef.current?.display(0) } catch { /* ignore */ } }}
@@ -619,7 +715,13 @@ function Reader() {
           }}
           onSave={() => {
             if (bookId && userIdRef.current) {
-              saveHighlight(userIdRef.current, bookId, selectedText).catch(() => {})
+              const cfi = selectedCfiRef.current ?? undefined
+              saveHighlight(userIdRef.current, bookId, selectedText, undefined, cfi).catch(() => {})
+              // Paint it right away so the saved passage is visibly marked
+              if (cfi) {
+                try { renditionRef.current?.annotations.highlight(cfi, {}, undefined, "hl", HIGHLIGHT_STYLE) }
+                catch { /* ignore */ }
+              }
             }
             setSelectedText(null)
           }}
@@ -636,7 +738,12 @@ function Reader() {
           theme={t}
           onSave={(note) => {
             if (bookId && userIdRef.current) {
-              saveHighlight(userIdRef.current, bookId, selectedText, note).catch(() => {})
+              const cfi = selectedCfiRef.current ?? undefined
+              saveHighlight(userIdRef.current, bookId, selectedText, note, cfi).catch(() => {})
+              if (cfi) {
+                try { renditionRef.current?.annotations.highlight(cfi, {}, undefined, "hl", HIGHLIGHT_STYLE) }
+                catch { /* ignore */ }
+              }
             }
             setNoteMode(false)
             setSelectedText(null)

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed background so the icon also works as "maskable" -->
+  <rect width="512" height="512" fill="#3d2b1f"/>
+  <!-- Open book -->
+  <g fill="#f4f1ea">
+    <path d="M256 168c-34-22-82-30-128-30v210c46 0 94 8 128 30 34-22 82-30 128-30V138c-46 0-94 8-128 30z" fill="none" stroke="#f4f1ea" stroke-width="22" stroke-linejoin="round"/>
+    <line x1="256" y1="168" x2="256" y2="378" stroke="#f4f1ea" stroke-width="14"/>
+    <!-- Text lines, left page -->
+    <line x1="160" y1="206" x2="226" y2="218" stroke="#c4ab8e" stroke-width="10" stroke-linecap="round"/>
+    <line x1="160" y1="244" x2="226" y2="256" stroke="#c4ab8e" stroke-width="10" stroke-linecap="round"/>
+    <line x1="160" y1="282" x2="226" y2="294" stroke="#c4ab8e" stroke-width="10" stroke-linecap="round"/>
+    <!-- Text lines, right page -->
+    <line x1="286" y1="218" x2="352" y2="206" stroke="#c4ab8e" stroke-width="10" stroke-linecap="round"/>
+    <line x1="286" y1="256" x2="352" y2="244" stroke="#c4ab8e" stroke-width="10" stroke-linecap="round"/>
+    <line x1="286" y1="294" x2="352" y2="282" stroke="#c4ab8e" stroke-width="10" stroke-linecap="round"/>
+  </g>
+</svg>

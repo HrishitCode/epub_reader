@@ -3,9 +3,10 @@
 import { useEffect, useState, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import { getUserId, getWords, getHighlights, deleteHighlight, getBooks, Word, Highlight } from "../lib/supabase/queries"
+import { PALETTE, readTheme, applyTheme, type Theme, type ThemePalette } from "../lib/theme"
 
-type Book  = { id: number; title: string | null }
-type Tab   = "all" | "words" | "highlights" | "notes"
+type Book = { id: number; title: string | null }
+type Tab  = "all" | "words" | "highlights" | "notes"
 
 // Unified entry for the feed
 type Entry =
@@ -28,6 +29,22 @@ function Notebook() {
   const [filterBook, setFilterBook] = useState<number | "all">("all")
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [uid,        setUid]        = useState<string | null>(null)
+  // Colours come from CSS variables (PALETTE) and follow <html data-theme>
+  // automatically — this state only drives the 🌙/☀️ toggle icon.
+  const [theme,      setTheme]      = useState<Theme>("sepia")
+  const t = PALETTE
+  const s = makeStyles(t)
+
+  // Sync the toggle icon with the saved theme (shared key across the app)
+  useEffect(() => { setTheme(readTheme()) }, [])
+
+  const toggleTheme = () => {
+    setTheme(prev => {
+      const next: Theme = prev === "sepia" ? "dark" : "sepia"
+      applyTheme(next)
+      return next
+    })
+  }
 
   useEffect(() => {
     getUserId()
@@ -90,25 +107,41 @@ function Notebook() {
   ]
 
   return (
-    <main style={{ minHeight: "100vh", background: "#f4f1ea", padding: "40px 20px",
-      fontFamily: "Georgia, serif" }}>
+    <main style={{ minHeight: "100vh", background: t.bg, padding: "40px 20px",
+      fontFamily: "Georgia, serif", transition: "background 0.2s" }}>
       <div style={{ maxWidth: 680, margin: "0 auto" }}>
 
         {/* Header */}
         <div style={{ marginBottom: 28 }}>
-          <button onClick={() => router.push("/library")}
-            style={{ background: "none", border: "none", cursor: "pointer",
-              color: "#7a6652", fontSize: "0.85rem", padding: 0, marginBottom: 8,
-              display: "block" }}>
-            ← Library
-          </button>
-          <h1 style={{ margin: 0, fontSize: "1.8rem", color: "#3d2b1f", fontWeight: "normal" }}>
-            My Notebook
-          </h1>
-          <p style={{ margin: "4px 0 0", color: "#a89880", fontSize: "0.88rem" }}>
-            {feed.length} {tab === "all" ? "entries" : tab}
-            {filterBook !== "all" ? ` in "${bookName(filterBook as number)}"` : ""}
-          </p>
+          <div style={{ display: "flex", alignItems: "flex-start",
+            justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <button onClick={() => router.push("/library")}
+                style={{ background: "none", border: "none", cursor: "pointer",
+                  color: t.muted, fontSize: "0.85rem", padding: 0, marginBottom: 8,
+                  display: "block", fontFamily: "Georgia, serif" }}>
+                ← Library
+              </button>
+              <h1 style={{ margin: 0, fontSize: "1.8rem", color: t.text, fontWeight: "normal" }}>
+                My Notebook
+              </h1>
+              <p style={{ margin: "4px 0 0", color: t.faint, fontSize: "0.88rem" }}>
+                {feed.length} {tab === "all" ? "entries" : tab}
+                {filterBook !== "all" ? ` in "${bookName(filterBook as number)}"` : ""}
+              </p>
+            </div>
+            {/* Dark / sepia toggle */}
+            <button
+              onClick={toggleTheme}
+              aria-label="Toggle light / dark mode"
+              title={theme === "sepia" ? "Switch to dark mode" : "Switch to light mode"}
+              style={{ width: 36, height: 36, display: "flex", alignItems: "center",
+                justifyContent: "center", borderRadius: "50%", cursor: "pointer",
+                border: `1px solid ${t.border}`, background: "none", fontSize: "1rem",
+                flexShrink: 0 }}>
+              {theme === "sepia" ? "🌙" : "☀️"}
+            </button>
+          </div>
         </div>
 
         {/* Controls row */}
@@ -119,7 +152,7 @@ function Notebook() {
           <select
             value={filterBook}
             onChange={e => setFilterBook(e.target.value === "all" ? "all" : parseInt(e.target.value))}
-            style={selectStyle}
+            style={s.select}
           >
             <option value="all">All books</option>
             {books.map(b => (
@@ -129,17 +162,17 @@ function Notebook() {
 
           {/* Type tabs */}
           <div style={{ display: "flex", borderRadius: 8, overflow: "hidden",
-            border: "1px solid #d4cfc6" }}>
-            {TABS.map((t, i) => (
-              <button key={t.key} onClick={() => setTab(t.key)}
+            border: `1px solid ${t.border}` }}>
+            {TABS.map((tb, i) => (
+              <button key={tb.key} onClick={() => setTab(tb.key)}
                 style={{
                   padding: "8px 14px", fontSize: "0.82rem", border: "none",
                   cursor: "pointer", fontFamily: "Georgia, serif",
-                  background: tab === t.key ? "#3d2b1f" : "#fffdf8",
-                  color:      tab === t.key ? "#f4f1ea" : "#7a6652",
-                  borderRight: i < TABS.length - 1 ? "1px solid #d4cfc6" : "none",
+                  background: tab === tb.key ? t.primaryBg : t.card,
+                  color:      tab === tb.key ? t.primaryText : t.muted,
+                  borderRight: i < TABS.length - 1 ? `1px solid ${t.border}` : "none",
                 }}>
-                {t.label}
+                {tb.label}
               </button>
             ))}
           </div>
@@ -147,9 +180,9 @@ function Notebook() {
 
         {/* Feed */}
         {loading ? (
-          <p style={{ color: "#a89880", textAlign: "center", marginTop: 60 }}>Loading…</p>
+          <p style={{ color: t.faint, textAlign: "center", marginTop: 60 }}>Loading…</p>
         ) : feed.length === 0 ? (
-          <div style={{ textAlign: "center", marginTop: 60, color: "#a89880" }}>
+          <div style={{ textAlign: "center", marginTop: 60, color: t.faint }}>
             <p style={{ fontSize: "1.05rem" }}>Nothing here yet.</p>
             <p style={{ fontSize: "0.88rem", marginTop: 6 }}>
               Select text in the reader to define words, save highlights, or add notes.
@@ -158,64 +191,66 @@ function Notebook() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {feed.map(entry => {
-              const uid = `${entry.kind}-${entry.kind === "word" ? (entry.data as Word).id : (entry.data as Highlight).id}`
-              const isOpen = expandedId === uid
+              const entryId = `${entry.kind}-${entry.kind === "word" ? (entry.data as Word).id : (entry.data as Highlight).id}`
+              const isOpen = expandedId === entryId
 
               if (entry.kind === "word") {
                 const w = entry.data as Word
                 const def = w.definition
-                const bookList = filterBook === "all" ? w.book_stats : w.book_stats.filter(s => s.book_id === filterBook)
+                const bookList = filterBook === "all" ? w.book_stats : w.book_stats.filter(st => st.book_id === filterBook)
                 return (
-                  <div key={uid} style={cardStyle}>
-                    <button onClick={() => setExpandedId(isOpen ? null : uid)}
-                      style={cardRowStyle}>
+                  <div key={entryId} style={s.card}>
+                    <button onClick={() => setExpandedId(isOpen ? null : entryId)}
+                      style={s.cardRow}>
                       <span style={typeBadge("word")}>Word</span>
                       <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
                         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                          <span style={{ fontSize: "1rem", color: "#3d2b1f", fontWeight: "bold" }}>
+                          <span style={{ fontSize: "1rem", color: t.text, fontWeight: "bold" }}>
                             {w.word}
                           </span>
                           {def?.phonetic && (
-                            <span style={{ fontSize: "0.78rem", color: "#a89880" }}>{def.phonetic}</span>
+                            <span style={{ fontSize: "0.78rem", color: t.faint }}>{def.phonetic}</span>
                           )}
                         </div>
                         {!isOpen && def?.meanings?.[0]?.definitions?.[0] && (
-                          <p style={previewStyle}>{def.meanings[0].definitions[0].definition}</p>
+                          <p style={s.preview}>{def.meanings[0].definitions[0].definition}</p>
                         )}
                       </div>
-                      <div style={metaStyle}>
-                        <span style={countBadge}>{w.total_count}×</span>
-                        <span style={dateStyle}>{formatDate(w.last_seen)}</span>
+                      <div style={s.meta}>
+                        <span style={s.countBadge}>{w.total_count}×</span>
+                        <span style={s.date}>{formatDate(w.last_seen)}</span>
                       </div>
-                      <span style={{ ...chevronStyle, transform: isOpen ? "rotate(180deg)" : "none" }}>▾</span>
+                      <span style={{ ...s.chevron, transform: isOpen ? "rotate(180deg)" : "none" }}>▾</span>
                     </button>
 
                     {isOpen && (
-                      <div style={expandedStyle}>
+                      <div style={s.expanded}>
                         {/* Per-book breakdown */}
                         {bookList.length > 0 && (
                           <div style={{ marginBottom: 14 }}>
-                            <p style={sectionLabel}>Per book</p>
-                            {bookList.map(s => (
-                              <div key={s.book_id} style={bookRowStyle}>
-                                <span style={{ fontSize: "0.85rem", color: "#3d2b1f", fontStyle: "italic" }}>
-                                  {bookName(s.book_id)}
+                            <p style={s.sectionLabel}>Per book</p>
+                            {bookList.map(st => (
+                              <div key={st.book_id} style={s.bookRow}>
+                                <span style={{ fontSize: "0.85rem", color: t.text, fontStyle: "italic" }}>
+                                  {bookName(st.book_id)}
                                 </span>
                                 <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                                  <span style={{ fontSize: "0.8rem", color: "#7a6652", fontWeight: "bold" }}>{s.count}×</span>
-                                  <span style={dateStyle}>first {formatDate(s.first_seen)}</span>
+                                  <span style={{ fontSize: "0.8rem", color: t.muted, fontWeight: "bold" }}>{st.count}×</span>
+                                  <span style={s.date}>first {formatDate(st.first_seen)}</span>
                                 </div>
                               </div>
                             ))}
                           </div>
                         )}
                         {/* Definition */}
+                        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                         {def?.meanings?.map((m: any, i: number) => (
                           <div key={i} style={{ marginTop: 8 }}>
                             <span style={posTag}>{m.partOfSpeech}</span>
                             <ol style={{ margin: "6px 0 0 18px", padding: 0 }}>
+                              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                               {m.definitions.slice(0, 3).map((d: any, j: number) => (
-                                <li key={j} style={{ fontSize: "0.88rem", color: "#3d2b1f",
+                                <li key={j} style={{ fontSize: "0.88rem", color: t.text,
                                   lineHeight: 1.7, marginBottom: 4 }}>
                                   {d.definition}
                                 </li>
@@ -223,50 +258,69 @@ function Notebook() {
                             </ol>
                           </div>
                         ))}
-                        <p style={{ ...dateStyle, marginTop: 12 }}>First looked up {formatDate(w.first_seen)}</p>
+                        <p style={{ ...s.date, marginTop: 12 }}>First looked up {formatDate(w.first_seen)}</p>
                       </div>
                     )}
                   </div>
                 )
               }
 
-              // Highlight or Note
+              // Highlight or Note — collapsed: clamped 2-line preview (so long
+              // passages don't make phone cards huge); tap to expand for the
+              // full passage, note, and metadata footer.
               const h = entry.data as Highlight
               return (
-                <div key={uid} style={cardStyle}>
-                  <div style={{ ...cardRowStyle, cursor: "default", alignItems: "flex-start" }}>
+                <div key={entryId} style={s.card}>
+                  <button onClick={() => setExpandedId(isOpen ? null : entryId)}
+                    style={{ ...s.cardRow, alignItems: "flex-start" }}>
                     <span style={typeBadge(entry.kind)}>{entry.kind === "note" ? "Note" : "Highlight"}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      {/* Passage */}
+                      {/* Passage — clamped while collapsed */}
                       <p style={{
-                        margin: "0 0 6px", fontSize: "0.9rem", color: "#3d2b1f",
+                        margin: 0, fontSize: "0.9rem", color: t.text,
                         fontStyle: "italic", lineHeight: 1.65,
-                        borderLeft: "3px solid #d4cfc6", paddingLeft: 10,
+                        borderLeft: `3px solid ${t.border}`, paddingLeft: 10,
+                        ...(isOpen ? {} : clamp2),
                       }}>
                         "{h.text}"
                       </p>
-                      {/* User note */}
+                      {/* Note hint while collapsed */}
+                      {!isOpen && h.note && (
+                        <p style={{ ...s.preview, fontStyle: "normal" }}>✏️ {h.note}</p>
+                      )}
+                    </div>
+                    <span style={{ ...s.chevron, transform: isOpen ? "rotate(180deg)" : "none" }}>▾</span>
+                  </button>
+
+                  {isOpen && (
+                    <div style={s.expanded}>
+                      {/* Full note */}
                       {h.note && (
-                        <p style={{ margin: 0, fontSize: "0.88rem", color: "#5a3e2b",
-                          lineHeight: 1.6, background: "#ece8df", borderRadius: 6,
-                          padding: "6px 10px" }}>
+                        <p style={{ margin: "12px 0 0", fontSize: "0.88rem", color: t.text,
+                          lineHeight: 1.6, background: t.surface, borderRadius: 6,
+                          padding: "8px 12px" }}>
                           {h.note}
                         </p>
                       )}
+                      {/* Footer: book · date — and Remove */}
+                      <div style={{ display: "flex", alignItems: "center",
+                        justifyContent: "space-between", gap: 10, marginTop: 12 }}>
+                        <span style={{ ...s.date, minWidth: 0, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {bookName(h.book_id)} · {formatDate(h.created_at)}
+                        </span>
+                        <button
+                          onClick={() => handleDeleteHighlight(h.id)}
+                          style={{ background: "none", border: `1px solid ${t.dangerBorder}`,
+                            borderRadius: 6, cursor: "pointer", color: t.danger,
+                            fontSize: "0.75rem", padding: "4px 10px", flexShrink: 0,
+                            fontFamily: "Georgia, serif" }}
+                          title="Delete">
+                          Remove
+                        </button>
+                      </div>
                     </div>
-                    <div style={{ ...metaStyle, alignItems: "flex-end" }}>
-                      <span style={{ ...dateStyle, fontSize: "0.72rem" }}>{bookName(h.book_id)}</span>
-                      <span style={dateStyle}>{formatDate(h.created_at)}</span>
-                      <button
-                        onClick={() => handleDeleteHighlight(h.id)}
-                        style={{ background: "none", border: "none", cursor: "pointer",
-                          color: "#c4b09a", fontSize: "0.75rem", padding: "2px 0",
-                          fontFamily: "Georgia, serif" }}
-                        title="Delete">
-                        Remove
-                      </button>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )
             })}
@@ -277,61 +331,75 @@ function Notebook() {
   )
 }
 
-// ── Shared micro-styles ───────────────────────────────────────────────────────
-const selectStyle: React.CSSProperties = {
-  padding: "8px 12px", fontSize: "0.82rem",
-  border: "1px solid #d4cfc6", borderRadius: 8,
-  background: "#fffdf8", color: "#3d2b1f",
-  fontFamily: "Georgia, serif", cursor: "pointer",
+// ── Theme-aware micro-styles ──────────────────────────────────────────────────
+function makeStyles(t: ThemePalette) {
+  return {
+    select: {
+      padding: "8px 12px", fontSize: "0.82rem",
+      border: `1px solid ${t.border}`, borderRadius: 8,
+      background: t.card, color: t.text,
+      fontFamily: "Georgia, serif", cursor: "pointer",
+    } as React.CSSProperties,
+    card: {
+      background: t.card, border: `1px solid ${t.border}`,
+      borderRadius: 10, overflow: "hidden",
+    } as React.CSSProperties,
+    cardRow: {
+      width: "100%", display: "flex", alignItems: "center",
+      gap: 10, padding: "13px 14px", background: "none",
+      border: "none", cursor: "pointer", textAlign: "left",
+    } as React.CSSProperties,
+    expanded: {
+      padding: "0 14px 14px", borderTop: `1px solid ${t.surface}`,
+    } as React.CSSProperties,
+    meta: {
+      display: "flex", flexDirection: "column", alignItems: "flex-end",
+      gap: 3, flexShrink: 0,
+    } as React.CSSProperties,
+    preview: {
+      margin: "3px 0 0", fontSize: "0.82rem", color: t.muted,
+      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+    } as React.CSSProperties,
+    date: { fontSize: "0.72rem", color: t.faint } as React.CSSProperties,
+    chevron: {
+      color: t.faint, fontSize: "0.8rem", flexShrink: 0, transition: "transform 0.2s",
+    } as React.CSSProperties,
+    countBadge: {
+      display: "inline-block", background: t.surface, color: t.muted,
+      borderRadius: 20, padding: "1px 8px", fontSize: "0.75rem",
+    } as React.CSSProperties,
+    sectionLabel: {
+      margin: "12px 0 8px", fontSize: "0.72rem", color: t.faint,
+      textTransform: "uppercase", letterSpacing: "0.06em",
+    } as React.CSSProperties,
+    bookRow: {
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      background: t.bg, borderRadius: 8, padding: "7px 11px", marginBottom: 4,
+    } as React.CSSProperties,
+  }
 }
-const cardStyle: React.CSSProperties = {
-  background: "#fffdf8", border: "1px solid #d4cfc6",
-  borderRadius: 10, overflow: "hidden",
-}
-const cardRowStyle: React.CSSProperties = {
-  width: "100%", display: "flex", alignItems: "center",
-  gap: 10, padding: "13px 14px", background: "none",
-  border: "none", cursor: "pointer", textAlign: "left",
-}
-const expandedStyle: React.CSSProperties = {
-  padding: "0 14px 14px", borderTop: "1px solid #ece8df",
-}
-const metaStyle: React.CSSProperties = {
-  display: "flex", flexDirection: "column", alignItems: "flex-end",
-  gap: 3, flexShrink: 0,
-}
-const previewStyle: React.CSSProperties = {
-  margin: "3px 0 0", fontSize: "0.82rem", color: "#7a6652",
-  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-}
-const dateStyle: React.CSSProperties = { fontSize: "0.72rem", color: "#a89880" }
-const chevronStyle: React.CSSProperties = {
-  color: "#a89880", fontSize: "0.8rem", flexShrink: 0, transition: "transform 0.2s",
-}
-const countBadge: React.CSSProperties = {
-  display: "inline-block", background: "#ece8df", color: "#7a6652",
-  borderRadius: 20, padding: "1px 8px", fontSize: "0.75rem",
-}
-const sectionLabel: React.CSSProperties = {
-  margin: "12px 0 8px", fontSize: "0.72rem", color: "#a89880",
-  textTransform: "uppercase", letterSpacing: "0.06em",
-}
-const bookRowStyle: React.CSSProperties = {
-  display: "flex", alignItems: "center", justifyContent: "space-between",
-  background: "#f4f1ea", borderRadius: 8, padding: "7px 11px", marginBottom: 4,
-}
+
+// Works on both themes (mid-tone bg, white text)
 const posTag: React.CSSProperties = {
   fontSize: "0.72rem", color: "#fff", background: "#a89880",
   borderRadius: 4, padding: "2px 6px", display: "inline-block",
 }
 
+// Multi-line ellipsis — caps collapsed passages at 2 lines
+const clamp2: React.CSSProperties = {
+  display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+  overflow: "hidden",
+}
+
+// Badge colours are CSS variables too (see globals.css), so they follow
+// <html data-theme> without re-rendering.
 function typeBadge(kind: string): React.CSSProperties {
   const colors: Record<string, [string, string]> = {
-    word:      ["#e8f0e8", "#4a7a4a"],
-    highlight: ["#fdf3e0", "#8a6a20"],
-    note:      ["#e8eaf6", "#3949ab"],
+    word:      ["var(--badge-word-bg)", "var(--badge-word-fg)"],
+    highlight: ["var(--badge-hl-bg)",   "var(--badge-hl-fg)"],
+    note:      ["var(--badge-note-bg)", "var(--badge-note-fg)"],
   }
-  const [bg, color] = colors[kind] ?? ["#ece8df", "#7a6652"]
+  const [bg, color] = colors[kind] ?? ["var(--surface)", "var(--muted)"]
   return {
     flexShrink: 0, fontSize: "0.68rem", fontFamily: "Georgia, serif",
     background: bg, color, borderRadius: 4, padding: "2px 7px",
@@ -342,9 +410,9 @@ function typeBadge(kind: string): React.CSSProperties {
 export default function NotebookPage() {
   return (
     <Suspense fallback={
-      <main style={{ minHeight: "100vh", background: "#f4f1ea", display: "flex",
+      <main style={{ minHeight: "100vh", background: PALETTE.bg, display: "flex",
         alignItems: "center", justifyContent: "center" }}>
-        <p style={{ color: "#a89880", fontFamily: "Georgia, serif" }}>Loading…</p>
+        <p style={{ color: PALETTE.faint, fontFamily: "Georgia, serif" }}>Loading…</p>
       </main>
     }>
       <Notebook />

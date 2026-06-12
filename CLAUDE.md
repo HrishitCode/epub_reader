@@ -42,9 +42,14 @@ supabase/
 ## Roadmap
 1. ~~Book library UI~~ ✅
 2. ~~Kindle-like reader theme~~ ✅ (sepia + dark, persisted in `reader_theme` localStorage key)
-3. ~~Word definition on select~~ ✅ (selection bar → `/api/define` → popover; saved to Words)
-4. **Notion integration** — save highlights/words/notes to a Notion database (next up; will need server-side code — good moment to also move catalog upload server-side so the file hash is verified)
-5. Private bucket + signed URLs (optional hardening)
+3. ~~Word definition on select~~ ✅ (selection bar → `/api/define` → popover; saved to Words; 🔊 pronunciation audio)
+4. ~~Reader/library polish~~ ✅ (font size controls, continue-reading card, progress bars, in-book highlight rendering via CFI, installable PWA)
+5. **Daily word quiz** — quiz the user on previously saved words from the Words table (next up)
+6. Offline reading (extend `public/sw.js` to cache epub files) and/or private bucket + signed URLs
+7. (Notion integration — dropped by choice; export can be done locally instead)
+
+> New columns required by #4 live in `supabase/feature-columns.sql` — must be
+> run in the Supabase SQL Editor (alongside `security-policies.sql`).
 
 ## Key conventions
 - Keep ALL Supabase calls in `app/lib/supabase/queries.ts`; do not scatter them in components

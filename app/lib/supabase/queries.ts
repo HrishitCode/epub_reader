@@ -333,30 +333,45 @@ export type Highlight = {
     book_id: number
     text: string
     note: string | null
+    cfi: string | null   // epub CFI range — lets the reader repaint it in-book
     created_at: string
 }
 
-// Save a highlighted sentence, optionally with a note.
+// Save a highlighted sentence, optionally with a note and its CFI range.
 export const saveHighlight = async (
     userId: string,
     bookId: number,
     text: string,
-    note?: string
+    note?: string,
+    cfi?: string
 ): Promise<void> => {
     const { error } = await supabase
         .from('Highlights')
-        .insert({ user_id: userId, book_id: bookId, text, note: note ?? null })
+        .insert({ user_id: userId, book_id: bookId, text, note: note ?? null, cfi: cfi ?? null })
     if (error) console.warn('saveHighlight error:', error.message)
 }
 
 export const getHighlights = async (userId: string): Promise<Highlight[]> => {
     const { data, error } = await supabase
         .from('Highlights')
-        .select('id, book_id, text, note, created_at')
+        .select('id, book_id, text, note, cfi, created_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
     if (error) throw error
     return (data ?? []) as Highlight[]
+}
+
+// CFI ranges of this user's highlights in one book — used by the reader to
+// repaint them when the book opens. Pre-CFI highlights (null) are skipped.
+export const getBookHighlightCfis = async (userId: string, bookId: number): Promise<string[]> => {
+    const { data, error } = await supabase
+        .from('Highlights')
+        .select('cfi')
+        .eq('user_id', userId)
+        .eq('book_id', bookId)
+        .not('cfi', 'is', null)
+    if (error) return []
+    return (data ?? []).map(r => r.cfi as string)
 }
 
 export const deleteHighlight = async (id: number, uid: string): Promise<void> => {
@@ -365,10 +380,14 @@ export const deleteHighlight = async (id: number, uid: string): Promise<void> =>
 
 // ── Reading progress (cross-device) ─────────────────────────────────────────
 // Saves the epub CFI string for a book so the user can resume on any device.
-export const updateProgress = async (bookId: number, cfi: string) => {
+// Also stamps last_opened (for the "Continue reading" card) and, when epub.js
+// has generated locations, the overall percentage 0..1 (for progress bars).
+export const updateProgress = async (bookId: number, cfi: string, pct?: number) => {
+    const patch: Record<string, unknown> = { progress: cfi, last_opened: new Date().toISOString() }
+    if (typeof pct === 'number' && pct > 0) patch.progress_pct = pct
     const { error } = await supabase
         .from('Books')
-        .update({ progress: cfi })
+        .update(patch)
         .eq('id', bookId)
     if (error) console.warn("updateProgress error:", error.message)
 }

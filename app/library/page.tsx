@@ -9,6 +9,7 @@ import {
   searchCatalog, addBookFromCatalog, type CatalogEntry,
 } from "../lib/supabase/queries"
 import { logout } from "../lib/supabase/auth"
+import { PALETTE, readTheme, applyTheme, type Theme, type ThemePalette } from "../lib/theme"
 
 type Book = {
   id: number
@@ -16,40 +17,8 @@ type Book = {
   book_url: string
   cover_url: string | null
   catalog_id: number | null
-}
-
-// ── Themes ───────────────────────────────────────────────────────────────────
-// Shares the "reader_theme" localStorage key with the reader so the choice
-// persists across the whole app.
-type Theme = "sepia" | "dark"
-
-const THEMES = {
-  sepia: {
-    bg:         "#f4f1ea",
-    surface:    "#ece8df",
-    border:     "#d4cfc6",
-    text:       "#3d2b1f",
-    muted:      "#7a6652",
-    primaryBg:  "#3d2b1f",
-    primaryText:"#f4f1ea",
-    primaryHover:"#5a3e2b",
-    coverBg:    "#d9cfc4",
-  },
-  dark: {
-    bg:         "#1c1c1e",
-    surface:    "#2c2c2e",
-    border:     "#3c3c3e",
-    text:       "#e8e0d0",
-    muted:      "#9a9080",
-    primaryBg:  "#e8e0d0",
-    primaryText:"#1c1c1e",
-    primaryHover:"#cfc6b4",
-    coverBg:    "#3c3c3e",
-  },
-}
-
-function readTheme(): Theme {
-  try { return (localStorage.getItem("reader_theme") as Theme) ?? "sepia" } catch { return "sepia" }
+  progress_pct: number | null   // 0..1, written by the reader
+  last_opened: string | null    // ISO timestamp of the last reader session
 }
 
 type EpubMeta = { title: string; coverBlob: Blob | null }
@@ -355,6 +324,8 @@ function Library() {
   const [uploadStatus, setUploadStatus] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  // Colours come from CSS variables (PALETTE) and follow <html data-theme>
+  // automatically — this state only drives the 🌙/☀️ toggle icon.
   const [theme, setTheme] = useState<Theme>("sepia")
   const [invalidMsg, setInvalidMsg] = useState<string | null>(null)   // corrupted-epub modal
   const [pendingDelete, setPendingDelete] = useState<Book | null>(null) // delete-confirm modal
@@ -364,7 +335,7 @@ function Library() {
   const [searchResults, setSearchResults] = useState<CatalogEntry[]>([])
   const [searching, setSearching] = useState(false)
   const [addingId, setAddingId] = useState<number | null>(null)
-  const t = THEMES[theme]
+  const t = PALETTE
 
   // catalog_ids already in this user's library — to mark search results.
   const ownedCatalogIds = new Set(books.map(b => b.catalog_id).filter((id): id is number => id != null))
@@ -375,7 +346,7 @@ function Library() {
   const toggleTheme = () => {
     setTheme(prev => {
       const next: Theme = prev === "sepia" ? "dark" : "sepia"
-      try { localStorage.setItem("reader_theme", next) } catch { /* ignore */ }
+      applyTheme(next)
       return next
     })
   }
@@ -579,6 +550,46 @@ function Library() {
 
         {error && <p className="text-red-600 mb-4 text-sm">{error}</p>}
 
+        {/* ── Continue reading — most recently opened book ──────────────── */}
+        {(() => {
+          const lastRead = books
+            .filter(b => b.last_opened)
+            .sort((a, b) => new Date(b.last_opened!).getTime() - new Date(a.last_opened!).getTime())[0]
+          if (!lastRead) return null
+          const pct = lastRead.progress_pct ? Math.round(lastRead.progress_pct * 100) : null
+          return (
+            <button
+              onClick={() => router.push(`/home?bookUrl=${encodeURIComponent(lastRead.book_url)}&bookId=${lastRead.id}`)}
+              className="w-full flex items-center gap-4 p-4 mb-8 rounded-xl text-left transition-shadow shadow-sm hover:shadow-md"
+              style={{ background: t.surface, border: `1px solid ${t.border}` }}
+            >
+              <div className="w-14 h-20 flex-shrink-0 rounded-sm overflow-hidden shadow" style={{ background: t.coverBg }}>
+                {lastRead.cover_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={lastRead.cover_url} alt="" className="w-full h-full object-cover" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs uppercase tracking-wide mb-1" style={{ color: t.muted }}>
+                  Continue reading
+                </p>
+                <p className="font-serif text-base sm:text-lg truncate" style={{ color: t.text }}>
+                  {lastRead.title ?? "Untitled"}
+                </p>
+                {pct !== null && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: t.coverBg }}>
+                      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: t.muted }} />
+                    </div>
+                    <span className="text-xs" style={{ color: t.muted }}>{pct}%</span>
+                  </div>
+                )}
+              </div>
+              <span className="text-xl flex-shrink-0" style={{ color: t.muted }}>›</span>
+            </button>
+          )
+        })()}
+
         {books.length === 0 ? (
           <p className="text-center mt-20" style={{ color: t.muted }}>
             No books yet. Upload your first .epub to get started.
@@ -619,6 +630,13 @@ function Library() {
                       </div>
                     )}
                   </div>
+                  {/* Reading progress under the cover */}
+                  {book.progress_pct != null && book.progress_pct > 0 && (
+                    <div className="h-[3px] rounded-full mt-1.5 overflow-hidden" style={{ background: t.coverBg }}>
+                      <div className="h-full rounded-full"
+                        style={{ width: `${Math.round(book.progress_pct * 100)}%`, background: t.muted }} />
+                    </div>
+                  )}
                   <span className="block text-sm font-serif text-center line-clamp-2 mt-2" style={{ color: t.text }}>
                     {book.title ?? "Untitled"}
                   </span>
@@ -772,7 +790,7 @@ function Library() {
 function ModalOverlay({ children, onClose, t }: {
   children: React.ReactNode
   onClose: () => void
-  t: (typeof THEMES)[Theme]
+  t: ThemePalette
 }) {
   return (
     <div
@@ -806,8 +824,8 @@ function ModalOverlay({ children, onClose, t }: {
 export default function LibraryPage() {
   return (
     <Suspense fallback={
-      <main className="min-h-screen flex items-center justify-center" style={{ background: THEMES.sepia.bg }}>
-        <p className="font-serif" style={{ color: THEMES.sepia.muted }}>Loading library…</p>
+      <main className="min-h-screen flex items-center justify-center" style={{ background: PALETTE.bg }}>
+        <p className="font-serif" style={{ color: PALETTE.muted }}>Loading library…</p>
       </main>
     }>
       <Library />

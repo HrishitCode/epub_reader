@@ -1,26 +1,52 @@
 @import "tailwindcss";
 
+/* ── App theme tokens ─────────────────────────────────────────────────────────
+   The active theme is the `data-theme` attribute on <html>, set by a blocking
+   script in layout.tsx BEFORE first paint (no flash) and flipped by the theme
+   toggles. Components reference these via the PALETTE object in lib/theme.ts —
+   the rendered markup is identical for both themes, so there are no hydration
+   mismatches and no re-render needed to switch. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg:            #f4f1ea;
+  --card:          #fffdf8;
+  --surface:       #ece8df;
+  --border:        #d4cfc6;
+  --text:          #3d2b1f;
+  --muted:         #7a6652;
+  --faint:         #a89880;
+  --primary-bg:    #3d2b1f;
+  --primary-text:  #f4f1ea;
+  --cover-bg:      #d9cfc4;
+  --danger:        #a13226;
+  --danger-border: #e8d5d0;
+  --badge-word-bg: #e8f0e8;      --badge-word-fg: #4a7a4a;
+  --badge-hl-bg:   #fdf3e0;      --badge-hl-fg:   #8a6a20;
+  --badge-note-bg: #e8eaf6;      --badge-note-fg: #3949ab;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html[data-theme="dark"] {
+  --bg:            #1c1c1e;
+  --card:          #2c2c2e;
+  --surface:       #3a3a3c;
+  --border:        #3c3c3e;
+  --text:          #e8e0d0;
+  --muted:         #9a9080;
+  --faint:         #7d766a;
+  --primary-bg:    #e8e0d0;
+  --primary-text:  #1c1c1e;
+  --cover-bg:      #3c3c3e;
+  --danger:        #e08070;
+  --danger-border: #5a3a36;
+  --badge-word-bg: #2e3b2e;      --badge-word-fg: #9fc89f;
+  --badge-hl-bg:   #3f351c;      --badge-hl-fg:   #d8b35e;
+  --badge-note-bg: #272b40;      --badge-note-fg: #9fa8da;
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  /* Theme-correct from the very first paint — pages layer their own
+     backgrounds on top of this. */
+  background: var(--bg);
+  color: var(--text);
   font-family: Arial, Helvetica, sans-serif;
 }
