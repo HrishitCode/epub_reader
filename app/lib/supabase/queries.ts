@@ -16,16 +16,147 @@ export const getBooks = async (uid: string) => {
     return data ?? []
 }
 
-export const insertBook = async (uid: string, book_url: string, title: string, cover_url?: string) => {
+export const insertBook = async (uid: string, book_url: string, title: string, cover_url?: string, start_index?: number, catalog_id?: number) => {
     const {error} = await supabase
     .from('Books')
-    .insert({book_url, user_id: uid, title, cover_url: cover_url ?? null})
+    .insert({book_url, user_id: uid, title, cover_url: cover_url ?? null, start_index: start_index ?? 0, catalog_id: catalog_id ?? null})
 
     if (error) {
         console.error("insertBook error:", error.message, error.details, error.hint)
         throw new Error(error.message)
     }
     return true
+}
+
+// ── Universal catalog (shared across all users) ──────────────────────────────
+// Every unique .epub is stored once in the Catalog table, keyed by the SHA-256
+// of its bytes. A user's Books row references the catalog entry (catalog_id) and
+// denormalises book_url/title/cover/start_index so the reader & library don't
+// need a join. Re-uploading the same file (anywhere) reuses the catalog entry
+// instead of storing the file again.
+export type CatalogEntry = {
+    id: number
+    file_hash: string | null
+    title: string | null
+    book_url: string
+    cover_url: string | null
+    start_index: number
+}
+
+// SHA-256 of the epub bytes → lowercase hex. Used as the dedup key.
+export const sha256Hex = async (buffer: ArrayBuffer): Promise<string> => {
+    const digest = await crypto.subtle.digest('SHA-256', buffer)
+    return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('')
+}
+
+export const findCatalogByHash = async (hash: string): Promise<CatalogEntry | null> => {
+    const { data } = await supabase
+        .from('Catalog')
+        .select('id, file_hash, title, book_url, cover_url, start_index')
+        .eq('file_hash', hash)
+        .maybeSingle()
+    return (data as CatalogEntry) ?? null
+}
+
+// Catalog files are content-addressed (path = sha256 of the bytes), so an
+// existing file is by definition the same file — never overwrite (upsert:false).
+// Allowing overwrite would let any logged-in user replace a shared book that
+// every other reader's library points at. A 409 "already exists" is success.
+const isAlreadyExists = (error: { message?: string } | null) =>
+    !!error?.message && /already exists|duplicate/i.test(error.message)
+
+export const uploadCatalogFile = async (file: ArrayBuffer, hash: string) => {
+    const path = `catalog/${hash}.epub`
+    const { data, error } = await supabase.storage
+        .from('Test bucket')
+        .upload(path, file, { cacheControl: '3600', upsert: false })
+    if (error) {
+        if (isAlreadyExists(error)) return { path }
+        throw error
+    }
+    return data
+}
+
+export const uploadCatalogCover = async (blob: Blob, hash: string) => {
+    const path = `catalog/covers/${hash}.jpg`
+    const { data, error } = await supabase.storage
+        .from('Test bucket')
+        .upload(path, blob, { contentType: 'image/jpeg', cacheControl: '3600', upsert: false })
+    if (error) {
+        if (isAlreadyExists(error)) return { path }
+        throw error
+    }
+    return data
+}
+
+export const insertCatalog = async (entry: {
+    file_hash: string
+    title: string
+    book_url: string
+    cover_url?: string
+    start_index: number
+    uploaded_by: string
+}): Promise<CatalogEntry> => {
+    const { data, error } = await supabase
+        .from('Catalog')
+        .insert({ ...entry, cover_url: entry.cover_url ?? null })
+        .select('id, file_hash, title, book_url, cover_url, start_index')
+        .single()
+    if (error) throw new Error(error.message)
+    return data as CatalogEntry
+}
+
+// Search the shared catalog by title (case-insensitive substring).
+export const searchCatalog = async (query: string): Promise<CatalogEntry[]> => {
+    // Escape ilike pattern metacharacters so user input is matched literally
+    // (a bare "%" or "_" would act as a wildcard, "\" as an escape).
+    const q = query.trim().slice(0, 100).replace(/[\\%_]/g, "\\$&")
+    if (!q) return []
+    const { data, error } = await supabase
+        .from('Catalog')
+        .select('id, file_hash, title, book_url, cover_url, start_index')
+        .ilike('title', `%${q}%`)
+        .order('title', { ascending: true })
+        .limit(30)
+    if (error) throw error
+    return (data ?? []) as CatalogEntry[]
+}
+
+// Add an existing catalog book to a user's library — no file upload. Returns
+// false if the user already has it.
+export const addBookFromCatalog = async (uid: string, c: CatalogEntry): Promise<boolean> => {
+    const { data: existing } = await supabase
+        .from('Books')
+        .select('id')
+        .eq('user_id', uid)
+        .eq('catalog_id', c.id)
+        .maybeSingle()
+    if (existing) return false
+
+    const { error } = await supabase.from('Books').insert({
+        user_id: uid,
+        catalog_id: c.id,
+        book_url: c.book_url,
+        cover_url: c.cover_url,
+        title: c.title,
+        start_index: c.start_index,
+    })
+    if (error) throw new Error(error.message)
+    return true
+}
+
+// Spine index where the actual reading material begins (past front matter).
+// Used by the reader to open at the body on first open. Defaults to 0.
+export const getBookStartIndex = async (bookId: number): Promise<number> => {
+    const { data, error } = await supabase
+        .from('Books')
+        .select('start_index')
+        .eq('id', bookId)
+        .single()
+    if (error) return 0
+    return data?.start_index ?? 0
 }
 
 export const uploadFile = async (file: ArrayBuffer, uid: string, filename: string) => {
@@ -68,21 +199,25 @@ function storagePathFromUrl(publicUrl: string): string | null {
     } catch { return null }
 }
 
-export const deleteBook = async (bookId: number, bookUrl: string, coverUrl?: string | null) => {
-    // 1. Delete storage files (best-effort — don't fail if already gone)
+export const deleteBook = async (uid: string, bookId: number, bookUrl: string, coverUrl?: string | null) => {
+    // 1. Delete storage files (best-effort — don't fail if already gone).
+    //    NEVER touch `catalog/` paths: those files are shared by every user who
+    //    added the book from the catalog — removing one user's library entry
+    //    must not delete the file out from under everyone else.
     const filesToRemove: string[] = []
     const bookPath = storagePathFromUrl(bookUrl)
-    if (bookPath) filesToRemove.push(bookPath)
+    if (bookPath && !bookPath.startsWith('catalog/')) filesToRemove.push(bookPath)
     if (coverUrl) {
         const coverPath = storagePathFromUrl(coverUrl)
-        if (coverPath) filesToRemove.push(coverPath)
+        if (coverPath && !coverPath.startsWith('catalog/')) filesToRemove.push(coverPath)
     }
     if (filesToRemove.length > 0) {
         await supabase.storage.from('Test bucket').remove(filesToRemove)
     }
 
-    // 2. Delete the DB row
-    const { error } = await supabase.from('Books').delete().eq('id', bookId)
+    // 2. Delete the DB row — scoped to the owner so a forged bookId can't
+    //    delete someone else's row (RLS is the real guard; this is belt+braces)
+    const { error } = await supabase.from('Books').delete().eq('id', bookId).eq('user_id', uid)
     if (error) throw new Error(error.message)
 }
 
@@ -224,8 +359,8 @@ export const getHighlights = async (userId: string): Promise<Highlight[]> => {
     return (data ?? []) as Highlight[]
 }
 
-export const deleteHighlight = async (id: number): Promise<void> => {
-    await supabase.from('Highlights').delete().eq('id', id)
+export const deleteHighlight = async (id: number, uid: string): Promise<void> => {
+    await supabase.from('Highlights').delete().eq('id', id).eq('user_id', uid)
 }
 
 // ── Reading progress (cross-device) ─────────────────────────────────────────

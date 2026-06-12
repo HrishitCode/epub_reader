@@ -2,55 +2,65 @@
 
 ## Stack
 - **Framework**: Next.js 16 (App Router), React 19, TypeScript
-- **Styling**: Tailwind CSS v4
-- **Auth + DB**: Supabase (auth, postgres `Books` table, `Test bucket` storage)
-- **EPUB rendering**: `react-reader` (wraps epub.js)
+- **Styling**: Tailwind CSS v4 (library/vocabulary pages); inline styles in the reader where react-reader requires them
+- **Auth + DB**: Supabase (auth, postgres, `Test bucket` storage)
+- **EPUB rendering**: `react-reader` (wraps epub.js); `fflate` for direct zip parsing (metadata, validation)
 - **Package manager**: pnpm
 
 ## Project structure
 ```
 app/
-  page.tsx          # Login / signup page
-  home/
-    page.tsx        # Reader view — loads epub from Supabase URL
-    upload.tsx      # File picker that uploads .epub to Supabase Storage
+  page.tsx            # Login / signup page (with "check your email" modal)
+  library/page.tsx    # Book grid, upload + validation, catalog search, delete
+  home/page.tsx       # Reader — themes, progress sync, selection bar, dictionary, notes
+  vocabulary/page.tsx # Notebook — unified feed of words / highlights / notes
+  api/define/route.ts # Server proxy to the Free Dictionary API (validated input)
   lib/supabase/
-    client.ts       # Supabase client singleton
-    auth.ts         # login(), signup()
-    queries.ts      # getBooks(), insertBook(), uploadFile(), getBookUrl(), getUserId()
-  types/
-    supabase.ts     # Generated Supabase types
-  globals.css
-  layout.tsx
+    client.ts         # Supabase client singleton (publishable key only)
+    auth.ts           # signup(), login(), logout(), getExistingSession()
+    queries.ts        # ALL Supabase calls live here
+  types/supabase.ts   # Generated Supabase types
+supabase/
+  security-policies.sql  # RLS + storage policies — run in Supabase SQL Editor
 ```
 
 ## Supabase schema
-- Table `Books`: `id`, `user_id` (uuid FK → auth.users), `book_url` (text)
-- Storage bucket: `Test bucket` — public read, stores epub files under `User/`
+- `Books` — per-user library: `id`, `user_id`, `book_url`, `title`, `cover_url`, `start_index`, `progress` (epub CFI), `catalog_id` (FK → Catalog)
+- `Catalog` — shared, deduped books keyed by `file_hash` (SHA-256 of the epub bytes); files stored at `catalog/<hash>.epub`, covers at `catalog/covers/<hash>.jpg`
+- `Words` — one row per (user, word): definition JSON + total count
+- `WordBookStats` — per-(word, book) lookup counts
+- `Highlights` — saved passages, optional `note`
+- Storage bucket `Test bucket` — public **read**; writes governed by storage policies (catalog files are insert-only/immutable; user files only under own `uid/` prefix)
 
-## Roadmap (iterate in order)
-1. **Book library UI** — after login show user's books as cards; route `/home?bookUrl=...`
-2. **Kindle-like reader theme** — warm sepia background, Georgia/serif font, comfortable line-height
-3. **Word double-tap → definition** — intercept `dblclick` inside the epub iframe, extract selected word, call a dictionary API
-4. **Notion integration** — save highlighted words/phrases/notes to a Notion database via the Notion API
-5. **Per-user storage paths** — prefix uploads with `uid/` so books are isolated per user
+## Security model (important)
+- The browser talks to Supabase with the **publishable key** — client-side `.eq('user_id', …)` filters are convenience, NOT security. **RLS policies are the enforcement layer**: keep `supabase/security-policies.sql` applied and update it whenever a table is added.
+- Never prefix server secrets with `NEXT_PUBLIC_` (that inlines them into browser JS). The secret key lives in `.env.local` as `SUPABASE_SECRET_API_KEY`, server-only.
+- `allowScriptedContent` in the reader must stay **false** — epubs are user-uploaded HTML and catalog books are shared across users; scripts in the epub iframe could reach the app origin and the Supabase session.
+- Catalog storage files are content-addressed and immutable (`upsert: false`; "already exists" treated as success). Never delete `catalog/` storage objects when a user removes a book — other libraries point at them.
+- The bucket is public-read by choice: anyone with a URL can download a book file, but cannot list, overwrite, or delete. Acceptable for now; switch to a private bucket + `createSignedUrl()` if book privacy starts to matter.
+
+## Roadmap
+1. ~~Book library UI~~ ✅
+2. ~~Kindle-like reader theme~~ ✅ (sepia + dark, persisted in `reader_theme` localStorage key)
+3. ~~Word definition on select~~ ✅ (selection bar → `/api/define` → popover; saved to Words)
+4. **Notion integration** — save highlights/words/notes to a Notion database (next up; will need server-side code — good moment to also move catalog upload server-side so the file hash is verified)
+5. Private bucket + signed URLs (optional hardening)
 
 ## Key conventions
-- Keep Supabase calls in `app/lib/supabase/queries.ts`; do not scatter them in components
+- Keep ALL Supabase calls in `app/lib/supabase/queries.ts`; do not scatter them in components
+- Destructive queries take `uid` and scope with `.eq('user_id', uid)` — belt-and-braces on top of RLS
 - Use `ArrayBuffer` when passing epub data between layers (Supabase Storage → react-reader)
-- No inline styles except for `height: 100vh` on the reader container (react-reader requires it)
-- Tailwind for everything else; no CSS modules
+- Tailwind for new UI; the reader keeps inline styles (react-reader constraint)
+- Upload flow: validate epub structure (`validateEpub`) → SHA-256 hash → catalog lookup → upload only if new → add to user's library
 
-## Known rough edges (to clean up as we go)
-- `uploadFile` hard-codes path `User/book2.epub` — needs `uid/filename` prefix
-- `getBooks` does not filter by `user_id` (missing `.eq('user_id', uid)`)
-- Login page has no loading state or error display
-- `home/page.tsx` shows a broken state when `bookUrl` is absent instead of redirecting
+## Known rough edges
+- `definition` is typed `any` in Words / queries.ts — needs a proper DictEntry type end-to-end
+- `types/supabase.ts` is stale; client.ts creates an untyped client (typed createClient is commented out)
+- No password strength requirements beyond Supabase's default minimum
+- `/api/define` has no rate limiting
 
 ## Learning checkpoints
-Each feature iteration notes a concept for the developer to read about:
-- Router / search params → Next.js App Router docs: `useSearchParams`, `useRouter`
-- epub.js rendering pipeline → react-reader README + epub.js "Rendition" concept
-- Supabase RLS (Row Level Security) → Supabase docs: policies, `auth.uid()`
-- Dictionary API → Free Dictionary API (`https://api.dictionaryapi.dev/api/v2/entries/en/<word>`)
+- Supabase RLS → `supabase/security-policies.sql` is annotated; docs: policies, `auth.uid()`
+- epub format internals → `library/page.tsx`: container.xml → OPF → manifest/spine parsing with fflate
+- epub.js rendering → react-reader README + epub.js "Rendition" concept
 - Notion API → Notion developers: "Append block children", database pages

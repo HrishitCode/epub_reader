@@ -3,7 +3,7 @@
 import { useSearchParams, useRouter } from 'next/navigation'
 import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { ReactReader, ReactReaderStyle } from 'react-reader'
-import { updateProgress, getProgress, upsertWordLookup, saveHighlight } from '../lib/supabase/queries'
+import { updateProgress, getProgress, getBookStartIndex, upsertWordLookup, saveHighlight } from '../lib/supabase/queries'
 import { getUserId } from '../lib/supabase/queries'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,6 +50,9 @@ function buildEpubCss(pageHeightPx: number, pageWidthPx: number, t: typeof THEME
     html, body {
       background: ${t.epubBg} !important;
       color: ${t.epubText} !important;
+      /* padding-bottom stops epub.js clipping the last line when column height
+         has subpixel rounding error or safe-area insets are involved */
+      padding-bottom: 1.8em !important;
     }
     a { color: ${t.epubLink}; }
     h1, h2, h3, h4, h5, h6 { break-inside: avoid; page-break-inside: avoid; }
@@ -296,6 +299,9 @@ function Reader() {
   const renditionRef   = useRef<Rendition | null>(null)
   const containerRef   = useRef<HTMLDivElement>(null)
   const userIdRef      = useRef<string | null>(null)
+  // Always holds the current CFI — resize callbacks can't see the latest
+  // `location` state through their closure, so we read it from this ref.
+  const locationRef    = useRef<string | number>(0)
 
   // Fetch userId once on mount — needed for word lookup saving
   useEffect(() => { getUserId().then(id => { userIdRef.current = id }).catch(() => {}) }, [])
@@ -304,16 +310,24 @@ function Reader() {
   useEffect(() => {
     async function loadProgress() {
       // 1. localStorage first — instant, works offline
-      let saved: string | number = 0
+      let saved: string | number | null = null
       if (progressKey) {
-        try { saved = localStorage.getItem(progressKey) ?? 0 } catch { /* ignore */ }
+        try { saved = localStorage.getItem(progressKey) } catch { /* ignore */ }
       }
       // 2. Supabase — may have more recent progress from another device
       if (bookId) {
         const remote = await getProgress(bookId)
         if (remote) saved = remote   // remote wins (most recently synced)
       }
-      setLocation(saved)
+      // 3. No saved progress anywhere → open at the detected body start so the
+      //    reader skips front matter (cover/praise/copyright/TOC) on first open.
+      //    A spine index (number) is a valid epub.js display target.
+      let start: string | number = saved ?? 0
+      if (saved == null && bookId) {
+        start = await getBookStartIndex(bookId)
+      }
+      setLocation(start)
+      locationRef.current = start
       setLocationReady(true)
     }
     loadProgress()
@@ -321,6 +335,10 @@ function Reader() {
   }, [bookId, progressKey])
 
   // ── Fetch epub ──────────────────────────────────────────────────────────────
+  // epub.js opens an ArrayBuffer as an in-memory zip archive. Books that would
+  // crash its render pipeline (missing spine files → `new Path(undefined)`) are
+  // rejected at upload time by validateEpub(), so anything that reaches here is
+  // structurally sound.
   useEffect(() => {
     if (!bookUrl) { router.push("/library"); return }
     fetch(bookUrl)
@@ -329,12 +347,49 @@ function Reader() {
       .catch(() => setLoading(false))
   }, [bookUrl, router])
 
+  // ── Tell epub.js to re-paginate after any container resize ─────────────────
+  // epub.js bakes column layout at init time. Any container size change
+  // (fullscreen toggle, orientation, browser bar appearing) needs a resize()
+  // call so it re-measures and re-flows the current page cleanly.
+  const triggerRenditionResize = useCallback(() => {
+    // Two passes: immediate (catches most cases) + 350 ms later (after CSS
+    // transitions and browser chrome animations finish)
+    // resize() re-measures the container and recalculates the column layout,
+    // but it does NOT re-flow content already painted in the current view —
+    // that's why the page only looked right again after a fresh chapter loaded.
+    // Re-displaying the current location forces epub.js to re-render the visible
+    // section against the corrected dimensions.
+    const run = () => {
+      const rendition = renditionRef.current
+      if (!rendition) return
+      try { rendition.resize() } catch { /* ignore */ }
+      const cfi = locationRef.current
+      if (typeof cfi === "string" && cfi.length > 0) {
+        try { rendition.display(cfi) } catch { /* ignore */ }
+      }
+    }
+    run()
+    setTimeout(run, 350)
+  }, [])
+
   // ── Sync browser fullscreenchange → React state (handles Escape key) ────────
   useEffect(() => {
-    const handler = () => setFullscreen(!!document.fullscreenElement)
+    const handler = () => {
+      setFullscreen(!!document.fullscreenElement)
+      triggerRenditionResize()
+    }
     document.addEventListener("fullscreenchange", handler)
     return () => document.removeEventListener("fullscreenchange", handler)
-  }, [])
+  }, [triggerRenditionResize])
+
+  // ── ResizeObserver — catches fullscreen, orientation, browser-bar changes ───
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => triggerRenditionResize())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [triggerRenditionResize])
 
   // ── Fullscreen toggle — uses native API so browser chrome hides on mobile ───
   const toggleFullscreen = async () => {
@@ -345,6 +400,7 @@ function Reader() {
       try { if (document.fullscreenElement) await document.exitFullscreen() } catch { /* ignore */ }
       setFullscreen(false)
     }
+    // resize fires via ResizeObserver + fullscreenchange listener above
   }
 
   // ── Rendition callback ──────────────────────────────────────────────────────
@@ -390,6 +446,7 @@ function Reader() {
   // ── Save progress handler ───────────────────────────────────────────────────
   const handleLocationChanged = (epubcfi: string) => {
     setLocation(epubcfi)
+    locationRef.current = epubcfi
     // localStorage — immediate
     if (progressKey) {
       try { localStorage.setItem(progressKey, epubcfi) } catch { /* ignore */ }
@@ -460,9 +517,15 @@ function Reader() {
 
   // ── Main render ─────────────────────────────────────────────────────────────
   return (
-    // containerRef is the fullscreen target — the entire reader, not just the epub area
+    // containerRef is the fullscreen target — the entire reader, not just the epub area.
+    // In fullscreen: position:fixed + inset:0 is the only reliable way to cover the full
+    // screen on mobile (100svh still leaves browser chrome visible on iOS/Android).
     <div ref={containerRef} style={{
-      height: "100svh", display: "flex", flexDirection: "column", background: t.bg,
+      ...(fullscreen
+        ? { position: "fixed", inset: 0, zIndex: 999 }
+        : { height: "100svh" }
+      ),
+      display: "flex", flexDirection: "column", background: t.bg,
     }}>
 
       {/* Top bar — hidden in fullscreen */}
@@ -485,6 +548,14 @@ function Reader() {
           )}
 
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            {/* Go to very beginning — front matter is skipped on first open but
+                never hidden; this jumps back to the cover/title page. */}
+            <button onClick={() => { try { renditionRef.current?.display(0) } catch { /* ignore */ } }}
+              title="Go to beginning"
+              style={{ background: "none", border: "none", cursor: "pointer",
+                color: t.mutedText, fontSize: "1.1rem", lineHeight: 1, padding: "2px 4px" }}>
+              ⤴
+            </button>
             {/* Dark / sepia toggle */}
             <button onClick={toggleTheme} title={theme === "sepia" ? "Switch to dark mode" : "Switch to sepia mode"}
               style={{ background: "none", border: "none", cursor: "pointer",
@@ -523,8 +594,12 @@ function Reader() {
           locationChanged={handleLocationChanged}
           getRendition={getRendition}
           readerStyles={readerStyles}
+          // allowScriptedContent MUST stay false: epubs are user-uploaded zips of
+          // HTML, and catalog books are shared across users — a <script> inside
+          // one would run with access to the app origin (incl. the Supabase
+          // session in localStorage). Keep the iframe sandbox script-free.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          epubOptions={{ allowScriptedContent: true, replacements: "none" } as any}
+          epubOptions={{ allowScriptedContent: false, replacements: "none" } as any}
         />
       </div>
 

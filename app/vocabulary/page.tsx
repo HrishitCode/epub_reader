@@ -27,10 +27,12 @@ function Notebook() {
   const [tab,        setTab]        = useState<Tab>("all")
   const [filterBook, setFilterBook] = useState<number | "all">("all")
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [uid,        setUid]        = useState<string | null>(null)
 
   useEffect(() => {
     getUserId()
       .then(async uid => {
+        setUid(uid)
         const [ws, hs, bs] = await Promise.all([
           getWords(uid),
           getHighlights(uid),
@@ -75,7 +77,8 @@ function Notebook() {
   })
 
   const handleDeleteHighlight = async (id: number) => {
-    await deleteHighlight(id)
+    if (!uid) return
+    await deleteHighlight(id, uid)
     setHighlights(prev => prev.filter(h => h.id !== id))
   }
 

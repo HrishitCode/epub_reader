@@ -13,6 +13,8 @@ export default function Page() {
   const [confirmPassword, setConfirmPassword] = useState("")
   const [email, setEmail] = useState("")
   const [loading, setLoading] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [signupEmail, setSignupEmail] = useState<string | null>(null)  // non-null → show "check your email" modal
 
   // If Supabase already has a session (token in localStorage), skip the login screen
   useEffect(() => {
@@ -24,25 +26,37 @@ export default function Page() {
     setEmail("")
     setPassword("")
     setConfirmPassword("")
+    setFormError(null)
   }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
+    setFormError(null)
     setLoading(true)
     try {
       if (mode === "signup") {
-        if (password !== confirmPassword) { alert("Passwords don't match"); return }
+        if (password !== confirmPassword) { setFormError("Passwords don't match"); return }
         await signup(email, password)
-        alert("Check your email to confirm your account, then log in.")
+        setSignupEmail(email)   // open the "check your email" modal
       } else {
         const uid = await login(email, password)
         if (uid) router.push("/library")
       }
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "Something went wrong")
+      setFormError(err instanceof Error ? err.message : "Something went wrong")
     } finally {
       setLoading(false)
     }
+  }
+
+  // After confirming the signup modal, switch to login mode with email prefilled
+  const dismissSignupModal = () => {
+    const confirmedEmail = signupEmail
+    setSignupEmail(null)
+    setMode("login")
+    setEmail(confirmedEmail ?? "")
+    setPassword("")
+    setConfirmPassword("")
   }
 
   return (
@@ -127,6 +141,19 @@ export default function Page() {
               </div>
             )}
 
+            {formError && (
+              <div style={{
+                background: "#fdecea",
+                border: "1px solid #f0c4be",
+                color: "#a13226",
+                fontSize: "0.85rem",
+                padding: "10px 12px",
+                borderRadius: 8,
+              }}>
+                {formError}
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={loading}
@@ -169,6 +196,77 @@ export default function Page() {
           Your books, your notes, your words.
         </p>
       </div>
+
+      {/* ── "Check your email" modal (replaces the default browser alert) ──── */}
+      {signupEmail && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={dismissSignupModal}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(61,43,31,0.45)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000,
+            animation: "fadeIn 0.18s ease-out",
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 380,
+              background: "#fffdf8",
+              border: "1px solid #d4cfc6",
+              borderRadius: 16,
+              padding: "32px 28px",
+              textAlign: "center",
+              boxShadow: "0 12px 40px rgba(61,43,31,0.22)",
+              animation: "popIn 0.2s ease-out",
+            }}
+          >
+            <div style={{ fontSize: "2.6rem", marginBottom: 12 }}>✉️</div>
+            <h3 style={{ margin: "0 0 10px", fontSize: "1.25rem", color: "#3d2b1f", fontWeight: "normal" }}>
+              Confirm your email
+            </h3>
+            <p style={{ margin: "0 0 6px", color: "#7a6652", fontSize: "0.92rem", lineHeight: 1.5 }}>
+              We&apos;ve sent a confirmation link to
+            </p>
+            <p style={{ margin: "0 0 20px", color: "#3d2b1f", fontSize: "0.95rem", fontWeight: 600, wordBreak: "break-all" }}>
+              {signupEmail}
+            </p>
+            <p style={{ margin: "0 0 24px", color: "#a89880", fontSize: "0.85rem", lineHeight: 1.5 }}>
+              Click the link in that email, then come back here to log in.
+            </p>
+            <button
+              onClick={dismissSignupModal}
+              style={{
+                width: "100%",
+                padding: "12px",
+                background: "#3d2b1f",
+                color: "#f4f1ea",
+                border: "none",
+                borderRadius: 8,
+                fontSize: "0.98rem",
+                fontFamily: "Georgia, serif",
+                cursor: "pointer",
+              }}
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes popIn  { from { opacity: 0; transform: scale(0.94) } to { opacity: 1; transform: scale(1) } }
+      `}</style>
     </main>
   )
 }
