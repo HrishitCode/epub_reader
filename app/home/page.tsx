@@ -335,6 +335,31 @@ function Reader() {
   const [selectedText, setSelectedText] = useState<string | null>(null)
   const [noteMode,     setNoteMode]     = useState(false)  // NoteModal open
 
+  // ── Scrubber — drag to seek WITHIN the current chapter ─────────────────────
+  // The slider's full width maps to just the current chapter (left = first page,
+  // right = last page), matching the per-chapter "page X / N" indicator above.
+  //   progressPct: whole-book position 0..1 from the latest relocated event.
+  //   chapterRange: {start,end} = the current chapter's whole-book pct bounds.
+  //   seekable: true once epub.js has generated locations (cfiFromPercentage works).
+  //   scrubValue: 0..1000 (chapter fraction) while dragging; null when idle so the
+  //     thumb follows the real position again. Decoupling lets the thumb track the
+  //     finger live while the actual page jump is debounced until the drag settles.
+  const [progressPct,  setProgressPct]  = useState(0)
+  const [seekable,     setSeekable]     = useState(false)
+  const [scrubValue,   setScrubValue]   = useState<number | null>(null)
+  const [chapterRange, setChapterRange] = useState<{ start: number; end: number } | null>(null)
+  const seekTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Map of spine index → {start,end} whole-book pct bounds, built once after
+  // locations generate. Ref-mirrored so debounced handlers read the latest.
+  const chapterBoundsRef = useRef<Map<number, { start: number; end: number }>>(new Map())
+  const chapterRangeRef  = useRef<{ start: number; end: number } | null>(null)
+  const currentIndexRef  = useRef<number | null>(null)
+  // Set chapter range in state + ref together
+  const applyChapterRange = (r: { start: number; end: number } | null) => {
+    chapterRangeRef.current = r
+    setChapterRange(r)
+  }
+
   const renditionRef   = useRef<Rendition | null>(null)
   const containerRef   = useRef<HTMLDivElement>(null)
   const userIdRef      = useRef<string | null>(null)
@@ -508,19 +533,80 @@ function Reader() {
     // background; progress saves just omit pct until it's ready.
     rendition.book?.ready
       ?.then(() => rendition.book.locations.generate(1000))
+      .then(() => {
+        // Locations are ready → cfiFromPercentage() now works, so the scrubber
+        // can seek. Seed the thumb from the current page so it doesn't sit at 0.
+        setSeekable(true)
+        try {
+          const cfi = locationRef.current
+          if (typeof cfi === "string" && cfi.length > 0) {
+            const p = rendition.book.locations.percentageFromCfi(cfi)
+            if (typeof p === "number" && p > 0) setProgressPct(p)
+          }
+        } catch { /* ignore */ }
+
+        // Build per-chapter (spine section) percentage bounds. Locations are
+        // uniform by character count, so location index i sits at pct i/(len-1);
+        // we just need the min/max location index that falls in each section.
+        // book.spine.get(cfi) resolves a CFI to its Section (and .index).
+        try {
+          const locations = rendition.book.locations
+          const len: number = locations.length?.() ?? 0
+          if (len > 1) {
+            const minMax = new Map<number, { min: number; max: number }>()
+            for (let i = 0; i < len; i++) {
+              const locCfi = locations.cfiFromLocation(i)
+              if (typeof locCfi !== "string") continue
+              let sp: number | undefined
+              try { sp = rendition.book.spine.get(locCfi)?.index } catch { sp = undefined }
+              if (sp == null) continue
+              const mm = minMax.get(sp)
+              if (!mm) minMax.set(sp, { min: i, max: i })
+              else mm.max = i
+            }
+            const bounds = new Map<number, { start: number; end: number }>()
+            minMax.forEach((mm, sp) => {
+              bounds.set(sp, { start: mm.min / (len - 1), end: Math.min(1, mm.max / (len - 1)) })
+            })
+            chapterBoundsRef.current = bounds
+            // Seed the current chapter's range now (relocated may have already
+            // fired before the map existed).
+            const idx = currentIndexRef.current
+            if (idx != null) applyChapterRange(bounds.get(idx) ?? null)
+          }
+        } catch { /* per-chapter scoping unavailable — slider stays disabled */ }
+      })
       .catch(() => { /* percentage stays unavailable for this book */ })
 
     rendition.on("relocated", (loc: any) => {
       const { displayed } = loc.start
       setPage(`${displayed.page} / ${displayed.total}`)
       const pct = loc.start.percentage
-      if (typeof pct === "number" && pct > 0) pctRef.current = pct
+      // Keep the scrubber in sync with wherever we actually landed — including
+      // chapter jumps from the TOC. (pctRef keeps the >0 guard so a spurious 0
+      // never overwrites saved progress, but the visible bar tracks every move.)
+      if (typeof pct === "number") {
+        if (pct > 0) pctRef.current = pct
+        setProgressPct(pct)
+      }
+      // Re-scope the slider to the chapter we're now in.
+      const idx: number | null = typeof loc.start.index === "number" ? loc.start.index : null
+      currentIndexRef.current = idx
+      if (idx != null && chapterBoundsRef.current.size > 0) {
+        applyChapterRange(chapterBoundsRef.current.get(idx) ?? null)
+      }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ── Save progress handler ───────────────────────────────────────────────────
   const handleLocationChanged = (epubcfi: string) => {
+    // A navigation just landed (page turn, scrub seek, or a chapter picked from
+    // the TOC). Kill any pending scrub seek so it can't fire afterwards and yank
+    // us back to the dragged spot, and drop the drag override so the scrubber
+    // snaps to the real position instead of freezing where it was dragged.
+    if (seekTimerRef.current) { clearTimeout(seekTimerRef.current); seekTimerRef.current = null }
+    setScrubValue(null)
     setLocation(epubcfi)
     locationRef.current = epubcfi
     // localStorage — immediate
@@ -533,6 +619,38 @@ function Reader() {
       saveTimerRef.current = setTimeout(
         () => updateProgress(bookId, epubcfi, pctRef.current ?? undefined), 2000)
     }
+  }
+
+  // ── Scrubber seek ───────────────────────────────────────────────────────────
+  // value is 0..1000 = fraction THROUGH THE CURRENT CHAPTER. We map it into the
+  // chapter's whole-book pct bounds, then cfiFromPercentage → a CFI. We seek by
+  // driving the SAME controlled `location` prop react-reader uses for the TOC and
+  // page arrows — NOT rendition.display() directly — so a later TOC pick can't be
+  // fought by a stale direct display. Returns the whole-book pct it sought to.
+  const seekTo = (value: number): number | null => {
+    const locations = renditionRef.current?.book?.locations
+    const range = chapterRangeRef.current
+    if (!locations || !range || range.end <= range.start) return null
+    try {
+      const pct = range.start + (value / 1000) * (range.end - range.start)
+      const cfi = locations.cfiFromPercentage(pct)
+      if (cfi) { setLocation(cfi); locationRef.current = cfi; return pct }
+    } catch { /* ignore */ }
+    return null
+  }
+
+  // Fired on every slider change (pointer drag or keyboard). The thumb follows
+  // `value` immediately; the actual jump is debounced so we only navigate once
+  // the drag settles, then we clear scrubValue so the thumb tracks the real page.
+  const handleScrub = (value: number) => {
+    setScrubValue(value)
+    if (seekTimerRef.current) clearTimeout(seekTimerRef.current)
+    seekTimerRef.current = setTimeout(() => {
+      seekTimerRef.current = null
+      const pct = seekTo(value)
+      if (pct != null) setProgressPct(pct)  // optimistic — relocated confirms shortly
+      setScrubValue(null)
+    }, 140)
   }
 
   // ── Re-inject CSS when theme changes ────────────────────────────────────────
@@ -565,6 +683,16 @@ function Reader() {
     arrowHover:  { color: t.text },
     tocBackground: { background: t.barBg } as React.CSSProperties,
   }
+
+  // ── Scrubber position (scoped to the current chapter) ───────────────────────
+  // The slider spans only the current chapter: 0 = first page, 1000 = last page.
+  // chapterFrac maps the whole-book progressPct into that local 0..1 window.
+  const chapterSpan  = chapterRange ? chapterRange.end - chapterRange.start : 0
+  const canScrub     = seekable && chapterSpan > 0
+  const chapterFrac  = canScrub
+    ? Math.min(1, Math.max(0, (progressPct - chapterRange!.start) / chapterSpan))
+    : 0
+  const sliderValue  = Math.round(scrubValue ?? chapterFrac * 1000)
 
   // ── Render: loading / error states ──────────────────────────────────────────
   if (loading || !locationReady) {
@@ -697,6 +825,37 @@ function Reader() {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           epubOptions={{ allowScriptedContent: false, replacements: "none" } as any}
         />
+      </div>
+
+      {/* ── Scrubber — drag through the current chapter (left=first, right=last) ── */}
+      <div style={{
+        flexShrink: 0, display: "flex", alignItems: "center", gap: 12,
+        padding: "8px 20px", background: t.barBg, borderTop: `1px solid ${t.barBorder}`,
+      }}>
+        <input
+          type="range"
+          min={0}
+          max={1000}
+          value={sliderValue}
+          onChange={e => handleScrub(parseInt(e.target.value, 10))}
+          disabled={!canScrub}
+          aria-label="Seek through the current chapter"
+          style={{
+            flex: 1, accentColor: t.arrow,
+            cursor: canScrub ? "pointer" : "default",
+            opacity: canScrub ? 1 : 0.5,
+          }}
+        />
+        <span style={{
+          fontFamily: "Georgia, serif", fontSize: "0.75rem", color: t.mutedText,
+          whiteSpace: "nowrap", minWidth: 104, textAlign: "right",
+        }}>
+          {!seekable
+            ? "Preparing pages…"
+            : page
+              ? <>p. {page}</>
+              : `${Math.round(sliderValue / 10)}% of chapter`}
+        </span>
       </div>
 
       {/* Selection bar */}
